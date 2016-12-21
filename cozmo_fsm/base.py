@@ -1,7 +1,7 @@
 """
     Base classes StateNode for nodes.py and Transition for
     transitions.py are placed here due to circular dependencies.
-    Their parent class EventListener is imported from erouter.py.
+    Their parent class EventListener is imported from evbase.py.
 
 """
 
@@ -84,7 +84,7 @@ class StateNode(EventListener):
 
     def now(self):
         """Use now() to execute this node from the command line instead of as part of a state machine."""
-        if not robot:
+        if not self.robot:
             raise ValueError('Node %s has no robot designated.' % self)
         self.robot.loop.call_soon(self.start)
 
@@ -118,18 +118,22 @@ class Transition(EventListener):
             if sibling.parent is not node.parent:
                 raise ValueError("All source/destination nodes must have the same parent.")
 
-    def add_source(self, node):
-        if not isinstance(node, StateNode):
-            raise TypeError('%s is not a StateNode' % node)
-        self._sibling_check(node)
-        node.add_transition(self)
-        self.sources.append(node)
+    def add_sources(self, *nodes):
+        for node in nodes:
+            if not isinstance(node, StateNode):
+                raise TypeError('%s is not a StateNode' % node)
+            self._sibling_check(node)
+            node.add_transition(self)
+            self.sources.append(node)
+        return self
 
-    def add_destination(self, node):
-        if not isinstance(node, StateNode):
-            raise TypeError('%s is not a StateNode' % node)
-        self._sibling_check(node)
-        self.destinations.append(node)
+    def add_destinations(self, *nodes):
+        for node in nodes:
+            if not isinstance(node, StateNode):
+                raise TypeError('%s is not a StateNode' % node)
+            self._sibling_check(node)
+            self.destinations.append(node)
+        return self
 
     def start(self,event):
         if self.running: return
