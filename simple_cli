@@ -1,4 +1,4 @@
-#!/usr/bin/python3 -i
+#!/usr/bin/env python3
 """
 
 Simple Cozmo CLI
@@ -7,22 +7,22 @@ A simple (and crude) Command Line Interface for Cozmo.
 If you exit the CLI loop, first close the TK window and then
 type reconnect() to re-establish the CLI.
 
-Strings sent to TCP port 4242 (including '\n' characters) will be 
-executed in python's context. Globals can be exchanged with the 
+Strings sent to TCP port 4242 (including '\n' characters) will be
+executed in python's context. Globals can be exchanged with the
 keyboard CLI environment.  This can be used in a Node-Red 'Template' node.
 
 Node-Red:  http://nodered.org
 
-With both node-red and this CLI started on the same device (Arch Linux 
-on a rooted Android phone, for example), then there is no more need for 
-interactions with a python shell on the phone or on a computer. All 
-interactions can be done via the Node-Red web server application 
+With both node-red and this CLI started on the same device (Arch Linux
+on a rooted Android phone, for example), then there is no more need for
+interactions with a python shell on the phone or on a computer. All
+interactions can be done via the Node-Red web server application
 exposed by the phone on Cozmo's internal network. Multiple machines
 can be simultaneously connected to Cozmo's WiFi access point, thus
 sharing control of Cozmo via Node-Red.
 
 The variable 'res' is defined as a default global, and its value
-is returned to the TCP client after command execution. The TCP CLI 
+is returned to the TCP client after command execution. The TCP CLI
 data packet can spread over more than one line. For example, we can have
 the following text in a Node-Red 'template' node connected to a TCP
 node and triggered by some injection node:
@@ -38,9 +38,9 @@ node and triggered by some injection node:
         q_turn(); q_turn(); q_turn(); q_turn()
         return({{payload}})
 
-    res=do_square() 
+    res=do_square()
 
-When triggered by the injection node's message, this code will make Cozmo 
+When triggered by the injection node's message, this code will make Cozmo
 perform a square dance, and return the trigger's payload (an echo) in
 the 'res' object, which can then used in the keyboard CLI.
 The functions do_square and q_turn also become available to the
@@ -55,13 +55,13 @@ Available CLI commands:
         Executable statements are directly passed to python's interpreter.  Some magic global variables:
             ans:    results from the keyboard CLI can be returned in this global object
             res:    results from the TCP server CLI can be returned in this global object
-        
-    exit    
+
+    exit
         Quit all the running activities
 
     monitor(robot[, Event])
         Monitor all event types in the dispatch table, or a specified type of Event
-    
+
     unmonitor(robot[, Event])
         Turn off monitoring
 
@@ -140,7 +140,7 @@ Changelog
         - Removed the '-i' for a better python exit
         - Do not start in tk mode if an argument is passed
 
-* Synchronous instead of async calls. 
+* Synchronous instead of async calls.
     Dave Touretzky
         - Not thread-safe but works much more smoothly.
 
@@ -156,9 +156,9 @@ import re
 from importlib import __import__, reload
 
 # This should be in your '.pythonstartup' file, but I put it also here just in case...
-import readline 
-import rlcompleter 
-import atexit 
+import readline
+import rlcompleter
+import atexit
 
 import cozmo
 from cozmo.util import *
@@ -175,15 +175,15 @@ try:
     from world_viewer import viewer
 except: pass
 
-# tab completion 
-readline.parse_and_bind('tab: complete') 
-# history file 
-histfile = os.path.join(os.environ['HOME'], '.pythonhistory') 
-try: 
-    readline.read_history_file(histfile) 
-except IOError: 
-    pass 
-atexit.register(readline.write_history_file, histfile) 
+# tab completion
+readline.parse_and_bind('tab: complete')
+# history file
+histfile = os.path.join(os.environ['HOME'], '.pythonhistory')
+try:
+    readline.read_history_file(histfile)
+except IOError:
+    pass
+atexit.register(readline.write_history_file, histfile)
 del os, histfile, readline, rlcompleter
 
 os_version = platform.system()
@@ -199,7 +199,7 @@ RUNNING = True
 class ThreadedExecRequestHandler( socketserver.BaseRequestHandler ):
     def handle(self):
         global res
-         
+
         try:
             exec('global res\n' + self.request.recv(1024).strip().decode('utf-8') )
         except Exception as e:
@@ -248,7 +248,7 @@ def runfsm(module_name, running_modules=dict()):
     if not isinstance(the_class,type) or not issubclass(the_class,cozmo_fsm.StateNode):
         print("Module %s does not contain a StateNode class named %s.\n" %
               (module_name, module_name))
-        return       
+        return
     running_fsm = the_class()
     robot.loop.call_soon(running_fsm.start)
     return running_fsm
@@ -358,7 +358,7 @@ if __name__ == '__main__':
     # Fair warning
     if os_version == 'Darwin':
         print("WARNING!! This program does not really work on OSX, because Not Linux. You have been warned.")
-    
+
     # Start the TCP CLI server
     address = ('localhost', 4242)  # let the kernel assign a port
     server = ThreadedExecServer(address,
@@ -369,12 +369,12 @@ if __name__ == '__main__':
     CLI_server.setDaemon(True)  # don't hang on exit
     CLI_server.start()
     print('CLI server loop running on port', port)
-    
+
     # Start the Cozmo thread:  connect to Cozmo and start the keyboard CLI
     COZMO_server = threading.Thread(target=reconnect)
     COZMO_server.setDaemon(True)  # don't hang on exit
     COZMO_server.start()
-    
+
     # Start doing nothing until not anymore ...
     while RUNNING:
         try:
