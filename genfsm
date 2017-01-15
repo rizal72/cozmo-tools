@@ -30,12 +30,23 @@ Author: David S. Touretzky, Carnegie Mellon University
 Changelog:
 ==========
 
+* 01/11/2017
+    Dave Touretzky
+        - Add colored messages using termcolor.cprint
+
 * 12/20/2016
     Dave Touretzky
         - Created.  Converted cozmo_fsm/examples to use this.
 """
 
 import sys, time, re
+
+try:
+    from termcolor import cprint
+except:
+    def cprint(string, color=None, file=None):
+        print(string)
+
 
 class Token:
     def __repr__(self):
@@ -131,10 +142,6 @@ class Transition(Token):
 
     def __repr__(self):
         label = self.label+':' if self.label else ''
-        try:
-            len(self.sources)
-        except:
-            print('self=',self.label,'sources:',type(self.sources))
         if len(self.sources) == 1:
             srcs = self.sources[0]
         else:
@@ -603,13 +610,13 @@ found_error = False
 
 def report_line_error(error_text):
     global found_error
-    sys.stderr.write(line_cache[current_line])
-    sys.stderr.write('Line %d: %s\n\n' % (current_line, error_text))
+    cprint(line_cache[current_line].rstrip(), color='red', file=sys.stderr)
+    cprint('Line %d: %s\n' % (current_line, error_text), color='red', file=sys.stderr)
     found_error = True
 
 def report_global_error(error_text):
     global found_error
-    sys.stderr.write('Error: %s\n' % error_text)
+    cprint('Error: %s\n' % error_text, color='red', file=sys.stderr)
     found_error = True
 
 def error_fragment(string):
@@ -644,8 +651,9 @@ if __name__ == '__main__':
                 with (open(outfile_name,'w') if outfile_name != '-' else sys.stdout) as out_f:
                     process_file()
                     if not found_error:
-                        print('Wrote generated code to %s.' %
-                              (outfile_name if outfile_name != '-' else 'standard output'))
+                        cprint('Wrote generated code to %s.' %
+                               (outfile_name if outfile_name != '-' else 'standard output'),
+                               color='green')
             except Exception as e:
                 print('Error opening output file: %s' % e)
                 import traceback
