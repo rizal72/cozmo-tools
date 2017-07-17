@@ -25,9 +25,9 @@ class FailureEvent(Event):
 
     def __repr__(self):
         if isinstance(self.details, cozmo.action.Action):
-            reason = details.failure_reason[0]
+            reason = self.details.failure_reason[0]
         else:
-            reason = details
+            reason = self.details
         return '<%s for %s: %s>' % (self.__class__.__name__, self.source.name, reason)
 
 
@@ -41,9 +41,20 @@ class DataEvent(Event):
 
 class TextMsgEvent(Event):
     """Signals a text message broadcasted to the state machine."""
-    def __init__(self,message):
+    def __init__(self,string,words=None,result=None):
         super().__init__()
-        self.source = message
+        self.string = string
+        self.words = words or string.split(None)
+        self.result = result
+
+class SpeechEvent(Event):
+    """Results of speech recognition process."""
+    def __init__(self,string,words=None,result=None):
+        super().__init__()
+        self.string = string
+        self.words = words
+        self.result = result
+
 
 #________________ Cozmo-generated events ________________
 

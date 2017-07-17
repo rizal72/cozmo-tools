@@ -33,7 +33,7 @@ class StateNode(EventListener):
         pass
 
     def setup2(self):
-        """Redefine this if post-setup processing s required."""
+        """Redefine this if post-setup processing is required."""
         pass
 
     def start(self,event=None):
@@ -44,7 +44,7 @@ class StateNode(EventListener):
         # Start transitions before children, because children
         # may post an event that we're listening for (such as completion).
         for t in self.transitions:
-            t.start(event)
+            t.start()
         if self.start_node:
             self.start_node.start()
 
@@ -55,8 +55,16 @@ class StateNode(EventListener):
         super().stop()
         # Stop children before transitions, because a child's stop()
         # method could post an event we want to handle.
-        for c in self.children.values(): c.stop()
+        self.stop_children()
         for t in self.transitions: t.stop()
+
+    def stop_children(self):
+        if self.children == {}:
+            return
+        if TRACE.trace_level >= TRACE.statenode_startstop:
+            print('TRACE%d:' % TRACE.statenode_startstop, self, 'is stopping its children')
+        for child in self.children.values():
+            child.stop()
 
     def add_transition(self, trans):
         if not isinstance(trans, Transition):
@@ -66,8 +74,12 @@ class StateNode(EventListener):
     def set_parent(self, parent):
         if not isinstance(parent, StateNode):
             raise TypeError('%s is not a StateNode' % parent)
-        if self.parent:
-            raise Exception('parent already set')
+        try:
+            if self.parent:
+                raise Exception('parent already set')
+        except AttributeError:
+            raise Exception("It appears %s's __init__ method did not call super().__init__"
+                            % self.__class__.__name__)
         self.parent = parent
         parent.children[self.name] = self
         # First-declared child is the default start node.
@@ -123,12 +135,6 @@ class Transition(EventListener):
     @property
     def robot(self):
         return self._robot
-        """if not self._robot:
-            if len(self.sources) > 0:
-                self._robot = self.sources.robot
-                return self._robot
-            else:
-                raise Exception('Transition %s has no sources.' % self)"""
 
     def _sibling_check(self,node):
         for sibling in self.sources + self.destinations:
@@ -152,7 +158,7 @@ class Transition(EventListener):
             self.destinations.append(node)
         return self
 
-    def start(self,event):
+    def start(self):
         if self.running: return
         if TRACE.trace_level >= TRACE.transition_startstop:
             print('TRACE%d:' % TRACE.transition_startstop, self, 'starting')
@@ -189,7 +195,7 @@ class Transition(EventListener):
             src.stop()
         self.stop()
         action_cancel_delay = 0.01  # wait for source node action cancellations to take effect
-        self.robot.loop.call_later(action_cancel_delay, self.fire2,event)
+        self.robot.loop.call_later(action_cancel_delay, self.fire2, event)
 
     def fire2(self,event):
         for dest in self.destinations:

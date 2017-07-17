@@ -1,13 +1,14 @@
 import time
 import inspect
 import random
-from math import sqrt
+from math import sqrt, sin, asin
 
 import cozmo
 from cozmo.util import distance_mm, speed_mmps, degrees, Distance, Angle
 
 from .base import *
 from .events import *
+from .cozmo_kin import wheelbase
 
 #________________ Ordinary Nodes ________________
 
@@ -38,6 +39,32 @@ class ParentFails(StateNode):
         if self.parent:
             self.parent.post_failure()
 
+class Iterate(StateNode):
+    """Iterates over an iterable, posting DataEvents.  Completes when done."""
+    def __init__(self,iterable=None):
+        super().__init__()
+        self.iterable = iterable
+
+    class NextEvent(Event): pass
+
+    def start(self,event=None):
+        if self.running: return
+        super().start(event)
+        if isinstance(event, DataEvent):
+            self.iterable = event.data
+        if isinstance(self.iterable, int):
+            self.iterable = range(self.iterable)
+        if self.iterable is None:
+            raise ValueError('~s has nothing to iterate on.' % repr(self))
+        if not isinstance(event, self.NextEvent):
+            self.iterator = self.iterable.__iter__()
+        try:
+            value = next(self.iterator)
+        except StopIteration:
+            self.post_completion()
+            return
+        self.post_data(value)
+
 class MoveLift(StateNode):
     def __init__(self,speed):
         super().__init__()
@@ -46,12 +73,41 @@ class MoveLift(StateNode):
     def start(self,event=None):
         if self.running: return
         super().start(event)
+        # Temporary hack supplied by Mark Wesley at Anki
+        msg = cozmo._clad._clad_to_engine_iface.EnableLiftPower(True)
+        self.robot.conn.send_msg(msg)
         self.robot.move_lift(self.speed)
 
     def stop(self):
         if not self.running: return
         self.robot.move_lift(0)
         super().stop()
+
+class RelaxLift(StateNode):
+    def start(self,event=None):
+        if self.running: return
+        super().start(event)
+        # Temporary hack supplied by Mark Wesley at Anki
+        msg = cozmo._clad._clad_to_engine_iface.EnableLiftPower(False)
+        self.robot.conn.send_msg(msg)
+
+class SetLights(StateNode):
+    def __init__(self, object, light):
+        super().__init__()
+        self.object = object
+        self.light = light
+
+    def start(self,event=None):
+        super().start(event)
+        if self.object is not self.robot:
+            self.object.set_lights(self.light)
+        else:
+            if self.light.on_color.int_color & 0x00FFFF00 == 0: # no green or blue component
+                self.robot.set_all_backpack_lights(self.light)
+            else:
+                self.robot.set_backpack_lights_off()
+                self.robot.set_center_backpack_lights(self.light)
+        self.post_completion()
 
 #________________ Coroutine Nodes ________________
 
@@ -86,14 +142,30 @@ class DriveWheels(CoroutineNode):
         self.r_wheel_speed = r_wheel_speed
         self.kwargs = kwargs
 
+    def start(self,event=None):
+        if (isinstance(event,DataEvent) and isinstance(event.data,(list,tuple)) and
+                len(event.data) == 2):
+            (lspeed,rspeed) = event.data
+            if isinstance(lspeed,(int,float)) and isinstance(rspeed,(int,float)):
+                self.l_wheel_speed = lspeed
+                self.r_wheel_speed = rspeed
+        super().start(event)
+
     def coroutine_launcher(self):
         return self.robot.drive_wheels(self.l_wheel_speed,self.r_wheel_speed,**self.kwargs)
 
+    def stop_wheels(self):
+        try:
+            driver = self.robot.drive_wheels(0,0)
+            # driver is either a co-routine or None
+            if driver: driver.send(None)  # will raise StopIteration
+        except StopIteration: pass
+
     def stop(self):
         if not self.running: return
+        self.stop_wheels()
         super().stop()        
-        cor = self.robot.drive_wheels(0,0)
-        self.handle = self.robot.loop.create_task(cor)
+
 
 class DriveForward(DriveWheels):
     def __init__(self, distance=50, speed=50, **kwargs):
@@ -112,6 +184,8 @@ class DriveForward(DriveWheels):
 
     def start(self,event=None):
         if self.running: return
+        if isinstance(event, DataEvent) and isinstance(event.data, cozmo.util.Distance):
+            self.distance = event.data.distance_mm
         self.start_position = self.robot.pose.position
         super().start(event)
 
@@ -122,9 +196,142 @@ class DriveForward(DriveWheels):
         diff = (p1.x - p0.x, p1.y - p0.y)
         dist = sqrt(diff[0]*diff[0] + diff[1]*diff[1])
         if dist >= self.distance:
+            self.poll_handle.cancel()
+            self.stop_wheels()
             self.post_completion()
-            # shut down manually in case no one was listening for the completion
-            self.stop()
+
+class DriveTurn(DriveWheels):
+    def __init__(self, angle=90, speed=50, **kwargs):
+        if isinstance(angle, cozmo.util.Angle):
+            angle = angle.degrees
+        if isinstance(speed, cozmo.util.Speed):
+            speed = speed.speed_mmps
+        if angle < 0:
+            speed = -speed
+        self.angle = angle
+        self.speed = speed
+        self.kwargs = kwargs
+        super().__init__(-speed,speed,**self.kwargs)
+        # Call parent init before setting polling interval.
+        self.polling_interval = 0.05
+
+    def start(self,event=None):
+        if self.running: return
+        if isinstance(event, DataEvent) and isinstance(event.data, cozmo.util.Angle):
+            self.angle = event.data.degrees
+        super().start(event)
+        self.last_heading = self.robot.pose.rotation.angle_z.degrees
+        self.traveled = 0
+
+    def poll(self):
+        """See how far we've traveled"""
+        p0 = self.last_heading
+        p1 = self.robot.pose.rotation.angle_z.degrees
+        self.last_heading = p1
+        # Assume we're polling quickly enough that diff will be small;
+        # typically only about 1 degree.  So diff will be large only
+        # if the heading has passed through 360 degrees since the last
+        # call to poll().  Use 90 degrees as an arbitrary large threshold.
+        diff = p1 - p0
+        if diff  < -90.0:
+            diff += 360.0
+        elif diff > 90.0:
+            diff -= 360.0
+        self.traveled += diff
+        if abs(self.traveled) > abs(self.angle):
+            self.poll_handle.cancel()
+            self.stop_wheels()
+            self.post_completion()
+
+
+class DriveArc(DriveWheels):
+    """Negative radius means right turn; negative angle means drive
+    backwards.  This node can be passed a DataEvent with a dict
+    containing any of the arguments accepted by __init__: radius,
+    angle, distance, speed, and angspeed.  Values must already be in
+    the appropriate units (degrees, mm, deg/sec, or mm/sec)."""
+    def __init__(self, radius=0, angle=0, distance=None,
+                 speed=None, angspeed=None, **kwargs):
+        if isinstance(radius, cozmo.util.Distance):
+            radius = radius.distance_mm
+        if isinstance(angle, cozmo.util.Angle):
+            angle = angle.degrees
+        if isinstance(speed, cozmo.util.Speed):
+            speed = speed.speed_mmps
+        if isinstance(angspeed, cozmo.util.Angle):
+            angspeed = angspeed.degrees
+        self.calculate_wheel_speeds(radius, angle, distance, speed, angspeed)
+        super().__init__(self.l_wheel_speed, self.r_wheel_speed, **kwargs)
+        # Call parent init before setting polling interval.
+        self.polling_interval = 0.05
+
+    def calculate_wheel_speeds(self, radius=0, angle=None, distance=None,
+                               speed=None, angspeed=None):
+        if radius != 0:
+            if angle is not None:
+                pass
+            elif distance is not None:
+                angle = self.dist2ang(distance, radius)
+            else:
+                raise ValueError('DriveArc requires an angle or distance.')
+
+            if  speed is not None:
+                pass
+            elif angspeed is not None:
+                speed = self.ang2dist(angspeed, radius)
+            else:
+                speed = 40 # degrees/second
+            if angle < 0:
+                speed = - speed
+
+            self.angle = angle
+            self.l_wheel_speed = speed * (1 - wheelbase / radius)
+            self.r_wheel_speed = speed * (1 + wheelbase / radius)
+
+        else:  # radius is 0
+            if angspeed is None:
+                angspeed = 40 # degrees/second
+            s = angspeed
+            if angle < 0:
+                s = -s
+            self.angle = angle
+            self.l_wheel_speed = -s
+            self.r_wheel_speed = s
+
+    def ang2dist(self, angle, radius):
+        return (angle / 360) * 2 * pi * abs(radius)
+
+    def dist2ang(self, distance, radius):
+        return (distance / abs(2 * pi * radius)) * 360
+
+    def start(self,event=None):
+        if self.running: return
+        if isinstance(event,DataEvent) and isinstance(event.data,dict):
+            self.calculate_wheel_speeds(**event.data)
+        self.last_heading = self.robot.pose.rotation.angle_z.degrees
+        self.traveled = 0
+        super().start(event)
+
+    def poll(self):
+        """See how far we've traveled"""
+        p0 = self.last_heading
+        p1 = self.robot.pose.rotation.angle_z.degrees
+        self.last_heading = p1
+        # Assume we're polling quickly enough that diff will be small;
+        # typically only about 1 degree.  So diff will be large only
+        # if the heading has passed through 360 degrees since the last
+        # call to poll().  Use 90 degrees as an arbitrary large threshold.
+        diff = p1 - p0
+        if diff  < -90.0:
+            diff += 360.0
+        elif diff > 90.0:
+            diff -= 360.0
+        self.traveled += diff
+
+        if abs(self.traveled) > abs(self.angle):
+            self.poll_handle.cancel()
+            self.stop_wheels()
+            self.post_completion()
 
 
 #________________ Action Nodes ________________
@@ -139,10 +346,13 @@ class ActionNode(StateNode):
         super().__init__()
         if 'in_parallel' not in self.action_kwargs:
             self.action_kwargs['in_parallel'] = True
+        if 'num_retries' not in self.action_kwargs:
+            self.action_kwargs['num_retries'] = 2
         self.cozmo_action_handle = None
 
     def start(self,event=None):
         super().start(event)
+        self.retry_count = 0
         self.launch_or_retry()
 
     def launch_or_retry(self):
@@ -179,7 +389,18 @@ class ActionNode(StateNode):
             elif self.cozmo_action_handle.failure_reason[0] == 'cancelled':
                 print('CANCELLED: ***>',self,self.cozmo_action_handle)
                 self.post_completion()
+            elif self.cozmo_action_handle.failure_reason[0] == 'retry':
+                if self.retry_count < self.action_kwargs['num_retries']:
+                    print("*** ACTION %s FAILED WITH CODE 'retry': TRYING AGAIN" %
+                        self.cozmo_action_handle)
+                    self.retry_count += 1
+                    self.launch_or_retry()
+                else:
+                    print("*** RETRY COUNT EXCEEDED: FAILING")
+                    self.post_failure(self.cozmo_action_handle)
             else:
+                print("*** ACTION %s FAILED AND CAN'T BE RETRIED." %
+                      self.cozmo_action_handle)
                 self.post_failure(self.cozmo_action_handle)
 
     def stop(self):
@@ -192,6 +413,11 @@ class ActionNode(StateNode):
 
 class Say(ActionNode):
     """Speaks some text, then posts a completion event."""
+
+    class SayDataEvent(Event):
+        def __init__(self,text=None):
+            self.text = text
+            
     def __init__(self, text="I'm speechless",
                  abort_on_stop=False, **action_kwargs):
         self.text = text
@@ -200,9 +426,10 @@ class Say(ActionNode):
 
     def start(self,event=None):
         if self.running: return
-        utterance = self.text
-        if isinstance(event,DataEvent):
-                utterance = event.data
+        if isinstance(event, self.SayDataEvent):
+            utterance = event.text
+        else:
+            utterance = self.text
         if isinstance(utterance, (list,tuple)):
             utterance = random.choice(utterance)
         if not isinstance(utterance, str):
@@ -212,10 +439,11 @@ class Say(ActionNode):
         print("Speaking: '",utterance,"'",sep='')
 
     def action_launcher(self):
-        return self.robot.say_text(self.utterance,**self.action_kwargs)
+        return self.robot.say_text(self.utterance, **self.action_kwargs)
 
 
 class Forward(ActionNode):
+    """ Moves forward a specified distance. Can accept a Distance as a Dataevent."""
     def __init__(self, distance=distance_mm(50),
                  speed=speed_mmps(50), abort_on_stop=True, **action_kwargs):
         if isinstance(distance, (int,float)):
@@ -234,12 +462,19 @@ class Forward(ActionNode):
         # super's init must come last because it checks self.action_kwargs
         super().__init__(abort_on_stop)
 
+    def start(self,event=None):
+        if self.running: return
+        if isinstance(event, DataEvent) and isinstance(event.data, cozmo.util.Distance):
+            self.distance = event.data
+        super().start(event)
+
     def action_launcher(self):
         return self.robot.drive_straight(self.distance, self.speed,
                                          **self.action_kwargs)
 
 
 class Turn(ActionNode):
+    """Turns by a specified angle. Can accept an Angle as a DataEvent."""
     def __init__(self, angle=degrees(90), abort_on_stop=True, **action_kwargs):
         if isinstance(angle, (int,float)):
             angle = degrees(angle)
@@ -249,8 +484,23 @@ class Turn(ActionNode):
         self.action_kwargs = action_kwargs
         super().__init__(abort_on_stop)
 
+    def start(self,event=None):
+        if self.running: return
+        if isinstance(event, DataEvent) and isinstance(event.data, cozmo.util.Angle):
+            self.angle = event.data
+        super().start(event)
+
     def action_launcher(self):
         return self.robot.turn_in_place(self.angle, **self.action_kwargs)
+
+class GoToPose(ActionNode):
+    def __init__(self, pose, abort_on_stop=True, **action_kwargs):
+        self.pose = pose
+        self.action_kwargs = action_kwargs
+        super().__init__(abort_on_stop)
+
+    def action_launcher(self):
+        return self.robot.go_to_pose(self.pose, **self.action_kwargs)
 
 class SetHeadAngle(ActionNode):
     def __init__(self, angle=degrees(0), abort_on_stop=True, **action_kwargs):
@@ -265,14 +515,93 @@ class SetHeadAngle(ActionNode):
     def action_launcher(self):
         return self.robot.set_head_angle(self.angle, **self.action_kwargs)
 
+class SetLiftHeight(ActionNode):
+    def __init__(self, height=0, abort_on_stop=True, **action_kwargs):
+        self.height = height
+        self.action_kwargs = action_kwargs
+        super().__init__(abort_on_stop)
+
+    def action_launcher(self):
+        # Temporary hack supplied by Mark Wesley at Anki
+        msg = cozmo._clad._clad_to_engine_iface.EnableLiftPower(True)
+        self.robot.conn.send_msg(msg)
+        return self.robot.set_lift_height(self.height, **self.action_kwargs)
+
+class SetLiftAngle(SetLiftHeight):
+    def __init__(self, angle, abort_on_stop=True, **action_kwargs):
+        def get_theta(height):
+            return asin((height-45)/66)
+        if isinstance(angle, cozmo.util.Angle):
+            angle = angle.radians
+        min_theta = get_theta(cozmo.robot.MIN_LIFT_HEIGHT_MM)
+        max_theta = get_theta(cozmo.robot.MAX_LIFT_HEIGHT_MM)
+        angle_range = max_theta - min_theta
+        height_pct = (angle - min_theta) / angle_range
+        super().__init__(height_pct, abort_on_stop=abort_on_stop, **action_kwargs)
+
+
+class PickUpObject(ActionNode):
+    def __init__(self, object=None, abort_on_stop=False, **action_kwargs):
+        self.object = object
+        self.action_kwargs = action_kwargs
+        super().__init__(abort_on_stop=abort_on_stop)
+
+    def start(self,event=None):
+        if self.running: return
+        if isinstance(event, DataEvent) and \
+                isinstance(event.data,cozmo.objects.LightCube):
+            self.object = event.data
+        super().start(event)
+
+    def action_launcher(self):
+        if self.object is None:
+            raise ValueError('No object to pick up')
+        return self.robot.pickup_object(self.object, **self.action_kwargs)
+
+class PlaceObjectOnGroundHere(ActionNode):
+    def __init__(self, object=None, abort_on_stop=False, **action_kwargs):
+        self.object = object
+        self.action_kwargs = action_kwargs
+        super().__init__(abort_on_stop=abort_on_stop)
+
+    def start(self,event=None):
+        if self.running: return
+        if isinstance(event, DataEvent) and \
+                isinstance(event.data,cozmo.objects.LightCube):
+            self.object = event.data
+        super().start(event)
+
+    def action_launcher(self):
+        if self.object is None:
+            raise ValueError('No object to place')
+        return self.robot.place_object_on_ground_here(self.object, **self.action_kwargs)
+
+class PlaceOnObject(ActionNode):
+    def __init__(self, object=None, abort_on_stop=False, **action_kwargs):
+        self.object = object
+        self.action_kwargs = action_kwargs
+        super().__init__(abort_on_stop=abort_on_stop)
+
+    def start(self,event=None):
+        if self.running: return
+        if isinstance(event, DataEvent) and \
+                isinstance(event.data,cozmo.objects.LightCube):
+            self.object = event.data
+        super().start(event)
+
+    def action_launcher(self):
+        if self.object is None:
+            raise ValueError('No object to place')
+        return self.robot.place_on_object(self.object, **self.action_kwargs)
+
+
 
 #________________ Animations ________________
-
 
 class AnimationNode(ActionNode):
     def __init__(self, anim_name='anim_bored_01', **kwargs):
         self.anim_name = anim_name
-        self.kwargs = kwargs
+        self.action_kwargs = kwargs
         super().__init__()
 
     def action_launcher(self):
@@ -284,7 +613,7 @@ class AnimationTriggerNode(ActionNode):
             raise TypeError('%s is not an instance of cozmo.anim._AnimTrigger' %
                             repr(trigger))
         self.trigger = trigger
-        self.kwargs = kwargs
+        self.action_kwargs = kwargs
         super().__init__()
 
     def action_launcher(self):
@@ -360,6 +689,6 @@ class RollBlock(StartBehavior):
     def __init__(self,stop_on_exit=True):
         super().__init__(cozmo.robot.behavior.BehaviorTypes.RollBlock,stop_on_exit)
 
-class stackBlocks(StartBehavior):
+class StackBlocks(StartBehavior):
     def __init__(self,stop_on_exit=True):
         super().__init__(cozmo.robot.behavior.BehaviorTypes.StackBlocks,stop_on_exit)
