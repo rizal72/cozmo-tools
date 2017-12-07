@@ -8,7 +8,7 @@ from .transform import wrap_angle
 
 from .rrt_shapes import *
 from .cozmo_kin import center_of_rotation_offset
-from .worldmap import WallObj, wall_marker_dict, LightCubeObj, CustomCubeObj, ChipObj
+from .worldmap import WallObj, wall_marker_dict, LightCubeObj, CustomCubeObj, ChipObj, RobotForeignObj
 
 # *** TODO: Collision checking needs to use opposite headings
 # for treeB nodes because robot is asymmetric.
@@ -126,18 +126,19 @@ class RRT():
         else:
             return (self.INTERPOLATE, new_node)
 
-    def parts_to_node(self,node):
+    def robot_parts_to_node(self,node):
         parts = []
         for part in self.robot_parts:
-            center = transform.point(part.center[0,0]+node.x, part.center[1,0]+node.y)
-            tmat = transform.translate(center[0,0],center[1,0]) \
-                      .dot(transform.aboutZ(part.orient))
+            tmat = transform.aboutZ(part.orient)
+            tmat = transform.translate(part.center[0,0], part.center[1,0]).dot(tmat)
+            tmat = transform.aboutZ(node.q).dot(tmat)
+            tmat = transform.translate(node.x, node.y).dot(tmat)
             this_part = part.instantiate(tmat)
             parts.append(this_part)
         return parts
 
     def collides(self, node):
-        for part in self.parts_to_node(node):
+        for part in self.robot_parts_to_node(node):
             for obstacle in self.obstacles:
                 if part.collides(obstacle):
                     return obstacle
@@ -162,12 +163,23 @@ class RRT():
             offset_goal = RRTNode(x=offset_x, y=offset_y, q=goal.q)
         self.offset_goal = offset_goal
 
+        # Check if start collides
         collider = self.collides(start)
         if collider:
-            raise StartCollides(start,collider)
-        collider = self.collides(offset_goal)
+            raise StartCollides(start,collider,collider.obstacle)
+
+        # Check if goal collides
+        if not isnan(self.offset_goal.q):
+            collider = self.collides(self.offset_goal)
+        else:  # no goal orientation specified, so try them all
+            temp_goal = self.offset_goal.copy()
+            for theta in range(0,360,10):
+                temp_goal.q = theta/180*pi
+                collider = self.collides(temp_goal)
+                if not collider:
+                    break
         if collider:
-            raise GoalCollides(goal,collider)
+            raise GoalCollides(goal,collider,collider.obstacle)
 
         treeA = [start]
         treeB = [offset_goal]
@@ -188,7 +200,7 @@ class RRT():
         if status is self.REACHED:
             return self.get_path(treeA, treeB)
         else:
-            raise MaxIterations()
+            raise MaxIterations(self.max_iter)
 
     def get_path(self, treeA, treeB):
         nodeA = treeA[-1]
@@ -414,6 +426,8 @@ class RRT():
                 obstacles.append(self.generate_cube_obstacle(obj))
             elif isinstance(obj, ChipObj):
                 obstacles.append(self.generate_chip_obstacle(obj))
+            elif isinstance(obj, RobotForeignObj):
+               obstacles.append(self.generate_foreign_obstacle(obj))
         self.obstacles = obstacles
 
     def generate_wall_obstacles(self,wall):
@@ -441,6 +455,7 @@ class RRT():
             r = Rectangle(center=center,
                           dimensions=dimensions,
                           orient=wall.theta )
+            r.obstacle = wall
             obst.append(r)
         return obst
 
@@ -448,11 +463,20 @@ class RRT():
         r = Rectangle(center=transform.point(obj.x, obj.y),
                       dimensions=obj.size[0:2],
                       orient=obj.theta)
+        r.obstacle = obj
         return r
 
     def generate_chip_obstacle(self,obj):
         r = Circle(center=transform.point(obj.x,obj.y),
                    radius=obj.radius)
+        r.obstacle = obj
+        return r
+
+    def generate_foreign_obstacle(self,obj):
+        r = Rectangle(center=transform.point(obj.x, obj.y),
+                      dimensions=(obj.size[0:2]),
+                      orient=obj.theta)
+        r.obstacle = obj
         return r
 
     def make_robot_parts(self,robot):

@@ -1,11 +1,12 @@
 from cozmo_fsm import transform
-from math import sqrt, pi
+from math import sqrt, pi, atan2
 import numpy as np
 
 class Shape():
     def __init__(self):
         self.center = transform.point()
         self.rotmat = transform.identity()
+        self.obstacle = None
     
     def __repr__(self):
         return "<%s >" % (self.__class__.__name__)
@@ -93,8 +94,10 @@ class Rectangle(Polygon):
 
     def instantiate(self, tmat):
         dimensions = (self.max_Ex-self.min_Ex, self.max_Ey-self.min_Ey)
-        return Rectangle(center=tmat.dot(self.center), orient=self.orient,
-                         dimensions=dimensions)
+        rot = atan2(tmat[1,0], tmat[0,0])
+        return Rectangle(center = tmat.dot(self.center),
+                         orient = rot + self.orient,
+                         dimensions = dimensions)
 
     def collides_rect(self,other):
         # Test others edges in our reference frame

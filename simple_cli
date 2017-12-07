@@ -349,6 +349,7 @@ def suppress_filter(log_record):
 
 logging_is_setup = False
 
+
 def start_connection():
     global logging_is_setup, VERBOSE
     if not logging_is_setup:
@@ -359,6 +360,7 @@ def start_connection():
     cozmo.logger.addFilter(suppress_filter)
     cozmo.robot.Robot.drive_off_charger_on_connect = False
     connection_error = None
+
     try:
         if len(sys.argv) >= 2:
             if sys.argv[1] == "TK_VIEWER":
@@ -368,6 +370,9 @@ def start_connection():
                 cozmo.connect(run)
         else:
             cozmo.connect(run)
+    except cozmo.exceptions.SDKVersionMismatch as e:
+        print('\n\n***** SDK version mismatch:',e,'\n\n')
+        connection_error = e
     except cozmo.ConnectionError as e:
         connection_error = e
     if connection_error is not None:

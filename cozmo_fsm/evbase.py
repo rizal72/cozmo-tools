@@ -18,7 +18,9 @@ class Event:
     """Base class for all events."""
     def __init__(self, source=None):
         self.source = source
+
     cozmo_evt_type = None
+
     def generator(self,erouter,cozmo_evt): pass
 
     def __repr__(self):
@@ -144,7 +146,8 @@ class EventListener:
         rep = object.__repr__(self)
         self.name = rep[1+rep.rfind(' '):-1]  # name defaults to hex address
         self.running = False
-        self.polling_interval = None
+        if not hasattr(self,'polling_interval'):
+            self.polling_interval = None
         self.poll_handle = None
         self._robot = robot_for_loading
 

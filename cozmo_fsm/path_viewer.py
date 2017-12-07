@@ -2,9 +2,12 @@
 Path planner display in OpenGL.
 """
 
-from OpenGL.GLUT import *
-from OpenGL.GL import *
-from OpenGL.GLU import *
+try:
+    from OpenGL.GLUT import *
+    from OpenGL.GL import *
+    from OpenGL.GLU import *
+except:
+    pass
 
 import time
 from math import pi, sin, cos
@@ -35,7 +38,7 @@ class PathViewer():
         self.aspect = self.width/self.height
         self.windowName = windowName
         self.translation = [0., 0.]  # Translation in mm
-        self.scale = 1
+        self.scale = 0.64
 
     def window_creator(self):
         global WINDOW
@@ -52,6 +55,7 @@ class PathViewer():
 
     def start(self): # Displays in background
         if not WINDOW:
+            opengl.init()
             opengl.CREATION_QUEUE.append(self.window_creator)
             while not WINDOW:
                 time.sleep(0.1)
@@ -60,6 +64,10 @@ class PathViewer():
     def clear(self):
         global the_items
         the_items = []
+
+    def set_rrt(self,new_rrt):
+        global the_rrt
+        the_rrt = new_rrt
 
     def draw_rectangle(self, center, width=4, height=None,
                        angle=0, color=(1,1,1), fill=True):
@@ -134,6 +142,10 @@ class PathViewer():
         glVertex2f(*pt2)
         glEnd()
 
+    def draw_tree(self,tree,color):
+        for node in tree:
+            self.draw_node(node,color)
+
     def draw_node(self,node,color):
         self.draw_rectangle((node.x,node.y), color=color)
         if node.parent:
@@ -160,11 +172,8 @@ class PathViewer():
                     self.draw_line((init_x,init_y), (cur_x,cur_y), color=color)
                     (init_x,init_y) = (cur_x,cur_y)
 
-    def draw_tree(self,tree,color):
-        for node in tree:
-            self.draw_node(node,color)
-
-    def draw_robot(self,parts):
+    def draw_robot(self,start_node):
+        parts = the_rrt.robot_parts_to_node(start_node)
         for part in parts:
             if isinstance(part,Circle):
                 self.draw_circle(center=(part.center[0,0],part.center[1,0]),
@@ -174,6 +183,7 @@ class PathViewer():
                 self.draw_rectangle(center=(part.center[0,0],part.center[1,0]),
                                     width=part.max_Ex-part.min_Ex,
                                     height=part.max_Ey-part.min_Ey,
+                                    angle=part.orient*180/pi,
                                     color=(1,1,0,0.7), fill=False)
 
     def draw_obstacle(self,obst):
@@ -206,6 +216,8 @@ class PathViewer():
 
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
+        self.draw_rectangle(center=(0,0), angle=45, width=5, height=5, color=(0.9, 0.5, 0), fill=False)
+
         self.draw_tree(the_rrt.treeA, color=(0,1,0))
         self.draw_tree(the_rrt.treeB, color=(0,0,1))
         for (tree,color) in the_items:
@@ -215,7 +227,7 @@ class PathViewer():
             self.draw_obstacle(obst)
 
         if the_rrt.start:
-            self.draw_robot(the_rrt.parts_to_node(the_rrt.start))
+            self.draw_robot(the_rrt.start)
 
         glutSwapBuffers()
 
